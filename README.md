@@ -64,9 +64,8 @@ pipenv run python run.py --type monthly
 # Install dev dependencies
 pipenv install --dev
 
-# Lint (ruff; installed directly, not via the Pipfile, to avoid Pipfile.lock churn)
-pip install ruff
-ruff check .
+# Lint (ruff is a dev dependency in the Pipfile)
+pipenv run ruff check .
 
 # Run offline unit tests (no NOTION_API_KEY needed)
 pipenv run pytest --cov=src/
