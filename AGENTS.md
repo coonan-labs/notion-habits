@@ -110,9 +110,13 @@ the Notion API at the `requests.Session` level (`tests/conftest.py`
   `NOTION_API_KEY=<key> pytest -m integration -o addopts=''`.
   The `page_type` fixture is parametrized over `daily`, `weekly`, and `monthly`.
 
-CI (`.github/workflows/tests.yml`) runs the offline suite with coverage on
-every push/PR. Offline coverage is ~99% of `src/`; the only uncovered lines
-are pre-existing fallback branches (rich-text body, formula/rollup parsing).
+CI (`.github/workflows/tests.yml`) runs `ruff check .` and then the offline
+suite with coverage on every push/PR. Offline coverage is ~99% of `src/`; the
+only uncovered lines are pre-existing fallback branches (rich-text body,
+formula/rollup parsing). Ruff is installed directly (`pip install ruff`) in
+CI and locally — it is deliberately not in the Pipfile, to avoid re-resolving
+`Pipfile.lock`. Run `ruff check .` locally before pushing; `ruff check --fix`
+applies the safe fixes.
 
 ## Coding Conventions
 

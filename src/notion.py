@@ -6,12 +6,12 @@ and manage field interactions.
 """
 
 # Base imports
+import enum
 import re
 import time
-from logging import getLogger, Logger
 from datetime import date, datetime
-import enum
-from typing import Any
+from logging import Logger, getLogger
+from typing import Any, ClassVar
 
 # PyPI imports
 import requests
@@ -42,7 +42,6 @@ def get_slug(value: str) -> str:
 
 class NotionException(Exception):
     """Custom Notion exception class"""
-    pass
 
 
 class NotionClient:
@@ -52,7 +51,7 @@ class NotionClient:
     """str: Base link for API endpoints"""
     API_VERSION = "2025-09-03"
     """str: API version to use in requests"""
-    METADATA_FIELDS = ["id", "url", "created_time", "last_edited_time"]
+    METADATA_FIELDS: ClassVar[list[str]] = ["id", "url", "created_time", "last_edited_time"]
     """list[str]: Metadata fields related to all Notion objects"""
     DEFAULT_TIMEOUT = 30
     """int: Seconds to wait for a Notion API response before timing out"""
@@ -82,9 +81,9 @@ class NotionClient:
         })
         # Cache of data sources already looked up, keyed by id and by name,
         # so a run that needs the same database twice only fetches it once.
-        self._data_source_cache: dict[str, "NotionDataSource"] = {}
+        self._data_source_cache: dict[str, NotionDataSource] = {}
 
-    def request(self, endpoint: str, method: str, payload: dict = None) -> dict:
+    def request(self, endpoint: str, method: str, payload: dict | None = None) -> dict:
         """Make request to Notion API
 
         Args:
@@ -147,7 +146,7 @@ class NotionClient:
                 pass
         return 2.0 ** (attempt - 1)
 
-    def get_data_source(self, data_source_id: str = None, data_source_name: str = None) -> "NotionDataSource":
+    def get_data_source(self, data_source_id: str | None = None, data_source_name: str | None = None) -> "NotionDataSource":
         """Get Notion data source object using client integration
 
         Args:
@@ -251,7 +250,7 @@ class NotionDataSource:
         """
         return {get_slug(k): v for k, v in self._properties.items()}
 
-    def query(self, params: dict = None) -> list["NotionRecord"]:
+    def query(self, params: dict | None = None) -> list["NotionRecord"]:
         """Query a Notion data source with parameters
 
         Args:
@@ -321,7 +320,7 @@ class NotionRecord:
                                 value=name, field_type="title")
 
     def __repr__(self):
-        return "<{} ({})>".format(self.__class__.__name__, self.name.value)
+        return f"<{self.__class__.__name__} ({self.name.value})>"
 
     @classmethod
     def from_api(cls, parent: NotionDataSource, payload: dict) -> "NotionRecord":
@@ -358,7 +357,7 @@ class NotionRecord:
             setattr(record, "_" + field, value)
 
         # Parse properties from query result payload
-        properties = dict()
+        properties = {}
         for property, details in payload["properties"].items():
             field = NotionField.from_api(
                 record=record, name=property, details=details)
@@ -401,7 +400,7 @@ class NotionRecord:
             dict: Fields with parsed values
         """
         # Get values from fields
-        fields = dict()
+        fields = {}
         for var, val in self.fields.items():
             if isinstance(val, NotionField):
                 val = val.value
@@ -423,11 +422,11 @@ class NotionRecord:
         Returns:
             dict: Representation of Notion Record for API requests
         """
-        properties = dict()
+        properties = {}
 
         # Check for record properties not on data source
         invalid_properties = [
-            k for k in self.fields.keys() if k not in self._parent.properties]
+            k for k in self.fields if k not in self._parent.properties]
         if invalid_properties:
             raise NotionException(f"Record properties do not exist on parent data source: "
                                   f"{', '.join(invalid_properties)}")
@@ -470,7 +469,7 @@ class NotionRecord:
 class NotionField:
     """Field in Notion with name, type and value"""
 
-    def __init__(self, record: NotionRecord, name: str, value: Any, field_type: str = None):
+    def __init__(self, record: NotionRecord, name: str, value: Any, field_type: str | None = None):
         """Constructor for NotionField object
 
         Args:
@@ -490,7 +489,7 @@ class NotionField:
         self.value = value
 
     def __repr__(self):
-        return "<{} ({})>".format(self.__class__.__name__, self.display_name)
+        return f"<{self.__class__.__name__} ({self.display_name})>"
 
     @classmethod
     def from_api(cls, record: NotionRecord, name: str, details: dict) -> "NotionField":
@@ -598,7 +597,7 @@ class FieldType(enum.Enum):
     NUMBER = "number"
     PHONE_NUMBER = "phone_number"
     # Backwards-compatible alias for the historic misspelling.
-    PHOME_NUMBER = "phone_number"
+    PHOME_NUMBER = "phone_number"  # noqa: PIE796 - intentional alias for the historic misspelling
     RELATION = "relation"
     RICH_TEXT = "rich_text"
     ROLLUP = "rollup"

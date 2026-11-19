@@ -6,12 +6,11 @@ Module to create Notion records for habit tracker databases.
 
 # Base imports
 import os
-from logging import getLogger, Logger
 from datetime import date
+from logging import Logger, getLogger
 
 # Local imports
 from src.notion import NotionClient, NotionField, NotionRecord
-
 
 logger: Logger = getLogger(__name__)
 RECORD_TYPES: dict = {
@@ -61,7 +60,7 @@ def get_habit_page(page_type: str, client: NotionClient | None = None,
     if client is None:
         api_key = os.getenv("NOTION_API_KEY")
         if not api_key:
-            raise EnvironmentError("No Notion API key available")
+            raise OSError("No Notion API key available")
         client = NotionClient(api_key=api_key)
 
     # Get and validate parent database ID from environment

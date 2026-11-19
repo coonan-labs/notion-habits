@@ -17,7 +17,6 @@ from src.notion import (
     NotionClient,
     NotionDataSource,
     NotionException,
-    NotionField,
     NotionRecord,
     get_slug,
 )

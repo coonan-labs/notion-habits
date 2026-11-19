@@ -38,7 +38,7 @@ def test_main_creates_and_commits_record():
 
 
 @pytest.mark.parametrize("error", [
-    EnvironmentError("No Notion API key available"),
+    OSError("No Notion API key available"),
     LookupError("Unable to identify record for yearly habits"),
     NotionException("No data source found"),
     requests.RequestException("boom"),

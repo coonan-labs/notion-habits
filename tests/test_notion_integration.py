@@ -9,11 +9,14 @@ import logging
 import pytest
 from jsonschema import validate
 
+from src.habits import RECORD_TYPES, get_habit_page
+
 # Local imports
 from src.notion import NotionClient, NotionRecord
-from src.habits import get_habit_page, RECORD_TYPES
 
 pytestmark = pytest.mark.integration
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +39,7 @@ def test_query_data_source(real_api_key: str, page_type: str):
     results = data_source.query(params={
         "page_size": page_size,
     })
-    logging.info(f"{len(results)} results returned")
+    logger.info(f"{len(results)} results returned")
 
     # THEN
     # Validate results and data types
@@ -56,5 +59,5 @@ def test_habit_record(page_schema: dict, page_type: str):
 
     # THEN
     # Validate record against schema
-    logging.info(json.dumps(api_body))
+    logger.info(json.dumps(api_body))
     validate(api_body, page_schema)

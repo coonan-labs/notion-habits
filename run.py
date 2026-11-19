@@ -56,8 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         record = habits.get_habit_page(page_type)
         record.commit()
-    except (EnvironmentError, LookupError, NotionException,
-            requests.RequestException) as exc:
+    except (OSError, LookupError, NotionException, requests.RequestException) as exc:
         logger.error("Failed to create %s habit record: %s", page_type, exc)
         return 1
     logger.info(f"Created {page_type} habit record: {record.id}")
