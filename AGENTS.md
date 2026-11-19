@@ -14,7 +14,12 @@ notion-habits/
 │   └── notion.py                   # Notion API client, data classes, field types
 ├── tests/
 │   ├── conftest.py                 # pytest fixtures (api_key, page_schema, page_type)
-│   └── test_notion.py              # Integration tests against real Notion API
+│   ├── unit/                       # Offline unit tests (mocked API, no key needed)
+│   │   ├── test_notion.py
+│   │   ├── test_habits.py
+│   │   └── test_run.py
+│   └── integration/                # Live-API tests, marked `integration`
+│       └── test_notion.py
 ├── .github/workflows/add_habits.yml # GitHub Actions schedule (daily 3 UTC)
 ├── Pipfile                         # Python 3.12 dependencies
 ├── example.env                     # Environment variable template
@@ -97,15 +102,15 @@ the Notion API at the `requests.Session` level (`tests/conftest.py`
 `pipenv run pytest` — integration tests are deselected by default via
 `pytest.ini` (`addopts = -m "not integration"`).
 
-- `tests/test_notion.py`: `get_slug`, `FieldType` detection/parsing,
+- `tests/unit/test_notion.py`: `get_slug`, `FieldType` detection/parsing,
   `NotionField` serialisation, client request/session/retry/caching,
   data-source query pagination, record parsing/commit.
-- `tests/test_habits.py`: `get_habit_page` for daily/weekly/monthly with a
-  mocked client, including the weekly prior-week copy and the
+- `tests/unit/test_habits.py`: `get_habit_page` for daily/weekly/monthly
+  with a mocked client, including the weekly prior-week copy and the
   `days_prayed == 0` case. `get_habit_page(page_type, client=..., today=...)`
   accepts an injected client/date so tests never hit the API.
-- `tests/test_run.py`: CLI argument validation and exit codes.
-- `tests/test_notion_integration.py`: The original live-API tests, marked
+- `tests/unit/test_run.py`: CLI argument validation and exit codes.
+- `tests/integration/test_notion_live.py`: The original live-API tests, marked
   `integration`. Run with
   `NOTION_API_KEY=<key> pytest -m integration -o addopts=''`.
   The `page_type` fixture is parametrized over `daily`, `weekly`, and `monthly`.
