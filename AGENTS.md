@@ -90,10 +90,29 @@ pipenv run pytest tests/ --cov=src/
 
 ## Testing
 
-Tests in `tests/test_notion.py` are integration tests that hit the real Notion API. They require `NOTION_API_KEY` to be set. The `page_type` fixture is parametrized over `daily`, `weekly`, and `monthly`.
+Most tests are offline unit tests and need no `NOTION_API_KEY`. They mock
+the Notion API at the `requests.Session` level (`tests/conftest.py`
+`make_client`) and use realistic payloads in `tests/fixtures/`
+(data-source details, search/query responses, page payloads). Run them with
+`pipenv run pytest` — integration tests are deselected by default via
+`pytest.ini` (`addopts = -m "not integration"`).
 
-- `test_query_data_source`: Verifies that querying a database returns `NotionRecord` instances.
-- `test_habit_record`: Creates a habit page and validates the API request body against a JSON schema (does not commit to Notion).
+- `tests/test_notion.py`: `get_slug`, `FieldType` detection/parsing,
+  `NotionField` serialisation, client request/session/retry/caching,
+  data-source query pagination, record parsing/commit.
+- `tests/test_habits.py`: `get_habit_page` for daily/weekly/monthly with a
+  mocked client, including the weekly prior-week copy and the
+  `days_prayed == 0` case. `get_habit_page(page_type, client=..., today=...)`
+  accepts an injected client/date so tests never hit the API.
+- `tests/test_run.py`: CLI argument validation and exit codes.
+- `tests/test_notion_integration.py`: The original live-API tests, marked
+  `integration`. Run with
+  `NOTION_API_KEY=<key> pytest -m integration -o addopts=''`.
+  The `page_type` fixture is parametrized over `daily`, `weekly`, and `monthly`.
+
+CI (`.github/workflows/tests.yml`) runs the offline suite with coverage on
+every push/PR. Offline coverage is ~99% of `src/`; the only uncovered lines
+are pre-existing fallback branches (rich-text body, formula/rollup parsing).
 
 ## Coding Conventions
 

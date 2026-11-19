@@ -64,9 +64,18 @@ pipenv run python run.py --type monthly
 # Install dev dependencies
 pipenv install --dev
 
-# Run tests (requires NOTION_API_KEY in environment)
-pipenv run pytest tests/ --cov=src/
+# Run offline unit tests (no NOTION_API_KEY needed)
+pipenv run pytest --cov=src/
+
+# Run the live Notion integration tests (requires NOTION_API_KEY)
+NOTION_API_KEY=<key> pytest -m integration -o addopts=''
 ```
+
+The offline suite mocks the Notion API at the HTTP session level and uses
+fixtures in `tests/fixtures/`; it runs in CI on every push and pull request.
+`NotionClient` reuses one `requests.Session` per client (30s timeout,
+retries on 429/5xx with backoff), caches data sources by id and name, and
+follows query pagination.
 
 ## Background
 
