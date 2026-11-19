@@ -28,4 +28,16 @@ jobs:
       # Offline unit tests only (no NOTION_API_KEY needed). Live Notion
       # tests are marked `integration`, skipped by default in pytest.ini.
       - name: Run offline unit tests
-        run: pipenv run pytest --cov=src/ --cov-report=term-missing
+        run: pipenv run pytest --cov=src/ --cov-report=term-missing --cov-report=xml
+
+      # Upload coverage to Codecov. Skipped when no token is configured:
+      # public repos can upload tokenless, but the org token is needed for
+      # protected-branch uploads (see personal-reporting PR #166, where an
+      # empty CODECOV_TOKEN broke the build). Upload failures never fail
+      # the build.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          verbose: true
