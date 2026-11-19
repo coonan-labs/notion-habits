@@ -19,7 +19,7 @@ notion-habits/
 │   │   ├── test_habits.py
 │   │   └── test_run.py
 │   └── integration/                # Live-API tests, marked `integration`
-│       └── test_notion.py
+│       └── test_notion_live.py
 ├── .github/workflows/add_habits.yml # GitHub Actions schedule (daily 3 UTC)
 ├── Pipfile                         # Python 3.12 dependencies
 ├── example.env                     # Environment variable template
@@ -116,11 +116,13 @@ the Notion API at the `requests.Session` level (`tests/conftest.py`
   The `page_type` fixture is parametrized over `daily`, `weekly`, and `monthly`.
 
 CI (`.github/workflows/ci.yml`) runs `pipenv run ruff check .` and then the
-offline suite with coverage on every push/PR. Offline coverage is ~99% of
-`src/`; the only uncovered lines are pre-existing fallback branches
-(rich-text body, formula/rollup parsing). Ruff is a dev dependency in the
-Pipfile. Run `pipenv run ruff check .` locally before pushing;
-`pipenv run ruff check --fix` applies the safe fixes.
+offline suite with coverage on every push/PR, uploading `coverage.xml` to
+Codecov when `CODECOV_TOKEN` is configured (skipped otherwise, and upload
+failures never fail the build — an empty token broke personal-reporting
+PR #166). Offline coverage is ~99% of `src/`; the only uncovered lines are
+pre-existing fallback branches (rich-text body, formula/rollup parsing).
+Ruff is a dev dependency in the Pipfile. Run `pipenv run ruff check .`
+locally before pushing; `pipenv run ruff check --fix` applies the safe fixes.
 
 ## Coding Conventions
 
