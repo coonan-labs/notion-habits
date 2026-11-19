@@ -22,13 +22,8 @@ jobs:
       - name: Install dependencies
         run: pipenv install --dev
 
-      # Ruff is intentionally installed directly, not via the Pipfile:
-      # adding it there would re-resolve Pipfile.lock. Keep it out.
-      - name: Install linter
-        run: pip install ruff
-
       - name: Lint
-        run: ruff check .
+        run: pipenv run ruff check .
 
       # Offline unit tests only (no NOTION_API_KEY needed). Live Notion
       # tests are marked `integration`, skipped by default in pytest.ini.
