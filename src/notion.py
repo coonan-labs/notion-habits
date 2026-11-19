@@ -6,16 +6,24 @@ and manage field interactions.
 """
 
 # Base imports
-import re
-from logging import getLogger, Logger
-from datetime import date, datetime
 import enum
-from typing import Any
+import re
+import time
+from datetime import date, datetime
+from logging import Logger, getLogger
+from typing import Any, ClassVar
 
 # PyPI imports
 import requests
 
 logger: Logger = getLogger(__name__)
+
+_SLUG_STRIP_RE = re.compile(r"[^\w\s-]")
+_SLUG_SEP_RE = re.compile(r"[-\s]+")
+_GUID_RE = re.compile(r"\w{8}\-\w{4}\-\w{4}\-\w{4}\-\w{12}")
+
+# HTTP status codes worth retrying (rate limiting / transient server errors).
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 def get_slug(value: str) -> str:
@@ -27,14 +35,13 @@ def get_slug(value: str) -> str:
     Returns:
         str: Slugified field name for property
     """
-    value = re.sub(r'[^\w\s-]', '', value).strip().lower()
-    value = re.sub(r'[-\s]+', '_', value)
+    value = _SLUG_STRIP_RE.sub("", value).strip().lower()
+    value = _SLUG_SEP_RE.sub("_", value)
     return value
 
 
 class NotionException(Exception):
     """Custom Notion exception class"""
-    pass
 
 
 class NotionClient:
@@ -44,18 +51,39 @@ class NotionClient:
     """str: Base link for API endpoints"""
     API_VERSION = "2025-09-03"
     """str: API version to use in requests"""
-    METADATA_FIELDS = ["id", "url", "created_time", "last_edited_time"]
+    METADATA_FIELDS: ClassVar[list[str]] = ["id", "url", "created_time", "last_edited_time"]
     """list[str]: Metadata fields related to all Notion objects"""
+    DEFAULT_TIMEOUT = 30
+    """int: Seconds to wait for a Notion API response before timing out"""
+    MAX_RETRIES = 3
+    """int: Total attempts for a request before giving up (1 initial + retries)"""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, timeout: float = DEFAULT_TIMEOUT,
+                 max_retries: int = MAX_RETRIES):
         """Constructor for Notion client
 
         Args:
-            api_key (str): Internal secret API key from Notion integration 
+            api_key (str): Internal secret API key from Notion integration
+            timeout (float): Seconds to wait for an API response.
+                Defaults to DEFAULT_TIMEOUT.
+            max_retries (int): Total attempts for retryable failures.
+                Defaults to MAX_RETRIES.
         """
         self.__api_key = api_key
+        self._timeout = timeout
+        self._max_retries = max(1, max_retries)
+        # One session per client: reuses TCP/TLS connections and sends the
+        # auth headers on every request, instead of a new connection per call.
+        self._session = requests.Session()
+        self._session.headers.update({
+            "Authorization": f"Bearer {self.__api_key}",
+            "Notion-Version": self.API_VERSION,
+        })
+        # Cache of data sources already looked up, keyed by id and by name,
+        # so a run that needs the same database twice only fetches it once.
+        self._data_source_cache: dict[str, NotionDataSource] = {}
 
-    def request(self, endpoint: str, method: str, payload: dict = None) -> dict:
+    def request(self, endpoint: str, method: str, payload: dict | None = None) -> dict:
         """Make request to Notion API
 
         Args:
@@ -69,23 +97,56 @@ class NotionClient:
         Returns:
             dict: Parsed API response
         """
-        # Call Notion API with arguments and headers
-        response = requests.api.request(
-            url=self.BASE_URL + endpoint,
-            method=method,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {self.__api_key}",
-                "Notion-Version": self.API_VERSION,
-            }
-        )
-        # Validate and parse response or raise exception
-        if response.ok:
-            return response.json()
-        else:
-            raise requests.RequestException(response.text, response=response)
+        url = self.BASE_URL + endpoint
+        last_error: Exception | None = None
+        for attempt in range(1, self._max_retries + 1):
+            response = self._session.request(
+                url=url,
+                method=method,
+                json=payload,
+                timeout=self._timeout,
+            )
+            # Validate and parse response or raise exception
+            if response.ok:
+                return response.json()
+            last_error = requests.RequestException(
+                response.text, response=response)
+            # Retry rate-limit / transient server errors, honouring any
+            # Retry-After header; anything else fails immediately.
+            if (response.status_code in _RETRYABLE_STATUS
+                    and attempt < self._max_retries):
+                wait = self._retry_wait(response, attempt)
+                logger.warning(
+                    "Notion API %s %s failed (%s), retrying in %.1fs "
+                    "(attempt %d/%d)",
+                    method, endpoint, response.status_code, wait,
+                    attempt, self._max_retries)
+                time.sleep(wait)
+                continue
+            raise last_error
+        # Unreachable when max_retries >= 1, but keeps type checkers honest.
+        raise last_error  # pragma: no cover
 
-    def get_data_source(self, data_source_id: str = None, data_source_name: str = None) -> "NotionDataSource":
+    @staticmethod
+    def _retry_wait(response: requests.Response, attempt: int) -> float:
+        """Backoff before a retry, honouring Retry-After when present.
+
+        Args:
+            response (requests.Response): Failed response.
+            attempt (int): Attempt number that just failed (1-based).
+
+        Returns:
+            float: Seconds to wait before the next attempt.
+        """
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                pass
+        return 2.0 ** (attempt - 1)
+
+    def get_data_source(self, data_source_id: str | None = None, data_source_name: str | None = None) -> "NotionDataSource":
         """Get Notion data source object using client integration
 
         Args:
@@ -94,13 +155,18 @@ class NotionClient:
 
         Returns:
             NotionDataSource: Data source object from Notion page
-        
+
         Raises:
             NotionException: No data source found with provided identifier or name
         """
+        # Return a cached data source when this client already loaded it.
+        cache_key = data_source_id or data_source_name
+        if cache_key and cache_key in self._data_source_cache:
+            return self._data_source_cache[cache_key]
+
         # Get data source using client and identifier
         if data_source_id:
-            return NotionDataSource(client=self, id=data_source_id)
+            data_source = NotionDataSource(client=self, id=data_source_id)
         elif data_source_name:
             result = self.request("/search", "POST", {
                 "query": data_source_name,
@@ -108,12 +174,26 @@ class NotionClient:
             })
             matched_results = [
                 d for d
-                in result["results"]
-                if "".join(t["plain_text"] for t in d["title"]) == data_source_name
+                in result.get("results", [])
+                if "".join(t["plain_text"] for t in d.get("title", [])) == data_source_name
             ]
             if matched_results:
-                return NotionDataSource(client=self, id=matched_results[0]["id"])
-        raise NotionException("No data source found with provided identifier or name")
+                data_source = NotionDataSource(
+                    client=self, id=matched_results[0]["id"])
+            else:
+                raise NotionException(
+                    "No data source found with provided identifier or name")
+        else:
+            raise NotionException(
+                "No data source found with provided identifier or name")
+
+        # Cache under both the id and, when known, the name, so a later
+        # lookup by either key reuses the loaded schema.
+        self._data_source_cache[data_source.id] = data_source
+        if data_source_name:
+            self._data_source_cache[data_source_name] = data_source
+        return data_source
+
 
 class NotionDataSource:
     """Structured set of Notion pages with defined properties"""
@@ -170,27 +250,44 @@ class NotionDataSource:
         """
         return {get_slug(k): v for k, v in self._properties.items()}
 
-    def query(self, params: dict) -> list["NotionRecord"]:
+    def query(self, params: dict | None = None) -> list["NotionRecord"]:
         """Query a Notion data source with parameters
 
         Args:
-            params (dict): Parameters for data source query
+            params (dict, optional): Parameters for data source query.
+                Defaults to None (no filter / default page size).
 
         Notes:
-            Define filters for the query request using 
+            Define filters for the query request using
             `Notion structure.<https://developers.notion.com/reference/post-data-source-query>`_
+            Follows ``has_more`` / ``next_cursor`` pagination so a query
+            returns every matching record, not just the first page.
 
         Returns:
             list[NotionRecord]: Records returned from data source query
         """
         # Query a Notion data source using query parameters
-        results = self.client.request(
-            f"/data_sources/{self.id}/query", "POST", params)
-        # Parse results to record objects
-        return [
-            NotionRecord.from_api(parent=self, payload=result)
-            for result in results["results"]
-        ]
+        params = dict(params) if params else {}
+        records: list[NotionRecord] = []
+        while True:
+            results = self.client.request(
+                f"/data_sources/{self.id}/query", "POST", params)
+            # Parse results to record objects
+            records.extend(
+                NotionRecord.from_api(parent=self, payload=result)
+                for result in results.get("results", [])
+            )
+            if not results.get("has_more"):
+                return records
+            # Guard against a malformed page that claims more results
+            # but supplies no cursor: returning what we have beats looping.
+            if not results.get("next_cursor"):
+                logger.warning(
+                    "Notion query for %s reported has_more without a "
+                    "next_cursor; returning %d records",
+                    self.id, len(records))
+                return records
+            params["start_cursor"] = results.get("next_cursor")
 
     def new_record(self, name: str) -> "NotionRecord":
         """Create a new record for the data source
@@ -223,7 +320,7 @@ class NotionRecord:
                                 value=name, field_type="title")
 
     def __repr__(self):
-        return "<{} ({})>".format(self.__class__.__name__, self.name.value)
+        return f"<{self.__class__.__name__} ({self.name.value})>"
 
     @classmethod
     def from_api(cls, parent: NotionDataSource, payload: dict) -> "NotionRecord":
@@ -235,18 +332,24 @@ class NotionRecord:
 
         Returns:
             NotionRecord: Record created from API response
+
+        Raises:
+            NotionException: Payload has no title property
         """
         # Get title property (often 'Name')
-        title_property = [
-            v for v in payload["properties"].values() if v["type"] == "title"][0]
+        title_property = next(
+            (v for v in payload["properties"].values() if v["type"] == "title"),
+            None)
+        if title_property is None:
+            raise NotionException(
+                f"Notion page {payload.get('id')} has no title property")
         title_value = FieldType.TITLE.parse(title_property["title"])
 
         # Create record instance
         record = cls(name=title_value, parent=parent)
 
         # Create class instance and add metadata attributes
-        logger.info(f"Parsing Notion page record: {
-                    payload['id']}, {title_value}")
+        logger.info(f"Parsing Notion page record: {payload['id']}, {title_value}")
         for field in parent.client.METADATA_FIELDS:
             value = payload[field]
             if field.endswith("_time"):
@@ -254,7 +357,7 @@ class NotionRecord:
             setattr(record, "_" + field, value)
 
         # Parse properties from query result payload
-        properties = dict()
+        properties = {}
         for property, details in payload["properties"].items():
             field = NotionField.from_api(
                 record=record, name=property, details=details)
@@ -297,7 +400,7 @@ class NotionRecord:
             dict: Fields with parsed values
         """
         # Get values from fields
-        fields = dict()
+        fields = {}
         for var, val in self.fields.items():
             if isinstance(val, NotionField):
                 val = val.value
@@ -311,7 +414,7 @@ class NotionRecord:
         Returns:
             list[Any]: Values from Notion fields
         """
-        return [val for _, val in self.fields]
+        return list(self.fields.values())
 
     def _get_api_body(self) -> dict:
         """Structure record data for API requests
@@ -319,21 +422,21 @@ class NotionRecord:
         Returns:
             dict: Representation of Notion Record for API requests
         """
-        properties = dict()
+        properties = {}
 
         # Check for record properties not on data source
         invalid_properties = [
-            k for k in self.fields.keys() if k not in self._parent.properties]
+            k for k in self.fields if k not in self._parent.properties]
         if invalid_properties:
-            raise NotionException(f"Record properties do not exist on parent data source: {
-                                  ', '.join(invalid_properties)}")
+            raise NotionException(f"Record properties do not exist on parent data source: "
+                                  f"{', '.join(invalid_properties)}")
 
         # Format all NotionField properties for API requests
         for var, val in self.fields.items():
             if not isinstance(val, NotionField):
                 val = NotionField(record=self, name=var, value=val)
             # Add API-formatted field to body dictionary
-            properties = {**properties, **val.get_api_format()}
+            properties.update(val.get_api_format())
 
         body = {
             "properties": properties,
@@ -366,7 +469,7 @@ class NotionRecord:
 class NotionField:
     """Field in Notion with name, type and value"""
 
-    def __init__(self, record: NotionRecord, name: str, value: Any, field_type: str = None):
+    def __init__(self, record: NotionRecord, name: str, value: Any, field_type: str | None = None):
         """Constructor for NotionField object
 
         Args:
@@ -386,7 +489,7 @@ class NotionField:
         self.value = value
 
     def __repr__(self):
-        return "<{} ({})>".format(self.__class__.__name__, self.display_name)
+        return f"<{self.__class__.__name__} ({self.display_name})>"
 
     @classmethod
     def from_api(cls, record: NotionRecord, name: str, details: dict) -> "NotionField":
@@ -404,7 +507,8 @@ class NotionField:
         name = get_slug(name)
         # Get field type to parse value
         field_type = FieldType(details["type"])
-        if details[field_type.value]:
+        # `is not None` (not truthiness): 0 and False are real values.
+        if details[field_type.value] is not None:
             field_value = field_type.parse(details[field_type.value])
         else:
             field_value = None
@@ -491,7 +595,9 @@ class FieldType(enum.Enum):
     LAST_EDITED_TIME = "last_edited_time"
     MULTI_SELECT = "multi_select"
     NUMBER = "number"
-    PHOME_NUMBER = "phone_number"
+    PHONE_NUMBER = "phone_number"
+    # Backwards-compatible alias for the historic misspelling.
+    PHOME_NUMBER = "phone_number"  # noqa: PIE796 - intentional alias for the historic misspelling
     RELATION = "relation"
     RICH_TEXT = "rich_text"
     ROLLUP = "rollup"
@@ -508,24 +614,29 @@ class FieldType(enum.Enum):
 
         Returns:
             FieldType: Enum instance value matching value
+
+        Raises:
+            TypeError: Value has no detectable Notion field type
+                (e.g. ``None`` or a dict).
         """
-        # Format of Notion identifier for relation fields
-        GUID_FORMAT = r"\w{8}\-\w{4}\-\w{4}\-\w{4}\-\w{12}"
-        # Return enum value based on variable type
+        # Return enum value based on variable type.
+        # bool must be checked before int: bool is a subclass of int.
+        if isinstance(value, bool):
+            return cls.CHECKBOX
         if isinstance(value, (date, datetime)):
             return cls.DATE
-        elif isinstance(value, str):
+        if isinstance(value, str):
             # Detect GUID format used for links
-            if re.match(GUID_FORMAT, value):
+            if _GUID_RE.match(value):
                 return cls.RELATION
-            else:
-                return cls.RICH_TEXT
-        elif isinstance(value, bool):
-            return cls.CHECKBOX
-        elif isinstance(value, list):
+            return cls.RICH_TEXT
+        if isinstance(value, list):
             return cls.MULTI_SELECT
-        elif isinstance(value, (int, float)):
+        if isinstance(value, (int, float)):
             return cls.NUMBER
+        raise TypeError(
+            f"Cannot detect Notion field type for value of type "
+            f"{type(value).__name__}: {value!r}")
 
     def parse(self, details: dict | bool) -> Any:
         """Parse Notion API payload based on field type
@@ -538,6 +649,8 @@ class FieldType(enum.Enum):
         """
         # Parse values based on field type
         if self.value == "date":
+            if not details or not details.get("start"):
+                return None
             return date.fromisoformat(details["start"])
         elif self.value == "created_by":
             return details["id"]

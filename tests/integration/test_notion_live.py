@@ -1,22 +1,37 @@
-# Base imports
+# Integration tests against the real Notion API.
+#
+# Marked `integration` and skipped by default (see pytest.ini). Run with:
+#   NOTION_API_KEY=<key> pytest -m integration -o addopts=''
 import json
 import logging
 
 # PyPI imports
+import pytest
 from jsonschema import validate
+
+from src.habits import RECORD_TYPES, get_habit_page
 
 # Local imports
 from src.notion import NotionClient, NotionRecord
-from src.habits import get_habit_page, RECORD_TYPES
+
+pytestmark = pytest.mark.integration
+
+logger = logging.getLogger(__name__)
 
 
-def test_query_data_source(api_key: str, page_type: str):
+@pytest.fixture(autouse=True)
+def _require_real_api_key(real_api_key):
+    if not real_api_key:
+        pytest.skip("NOTION_API_KEY is not set; skipping live Notion test")
+
+
+def test_query_data_source(real_api_key: str, page_type: str):
 
     # GIVEN
     # Get weekly database identifier from environment
     db_name = RECORD_TYPES[page_type]["parent"]
     page_size = 5
-    client = NotionClient(api_key=api_key)
+    client = NotionClient(api_key=real_api_key)
     data_source = client.get_data_source(data_source_name=db_name)
 
     # WHEN
@@ -24,7 +39,7 @@ def test_query_data_source(api_key: str, page_type: str):
     results = data_source.query(params={
         "page_size": page_size,
     })
-    logging.info(f"{len(results)} results returned")
+    logger.info(f"{len(results)} results returned")
 
     # THEN
     # Validate results and data types
@@ -44,5 +59,5 @@ def test_habit_record(page_schema: dict, page_type: str):
 
     # THEN
     # Validate record against schema
-    logging.info(json.dumps(api_body))
+    logger.info(json.dumps(api_body))
     validate(api_body, page_schema)
